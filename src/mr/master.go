@@ -2,7 +2,6 @@ package mr
 
 import (
 	"log"
-	"sync"
 	"time"
 )
 import "net"
@@ -33,8 +32,6 @@ type Master struct {
 	totalReduceTasks int
 
 	splits []string
-
-	mutex sync.Mutex
 }
 
 // Your code here -- RPC handlers for the worker to call.
