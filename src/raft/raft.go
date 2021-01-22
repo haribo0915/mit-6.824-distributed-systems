@@ -80,8 +80,6 @@ type Raft struct {
 	currentState          State
 	applyCh               chan ApplyMsg
 
-	lastHeartBeat 		  time.Time
-
 	raftMsgChan                         chan interface{}
 	isReadyToApplyEntriesToStateMachine chan bool
 	shutdown                            chan bool
@@ -227,6 +225,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	done := make(chan RequestVoteReply, 1)
 	rf.raftMsgChan <- RequestVoteMsg{args, done}
+
 	// Copy data.
 	r := <-done
 	reply.Term = r.Term
@@ -237,8 +236,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// Your code here (2A, 2B).
 	done := make(chan AppendEntriesReply, 1)
 	rf.raftMsgChan <- AppendEntriesMsg{args, done}
-	r := <-done
+
 	// Copy data.
+	r := <-done
 	reply.Term = r.Term
 	reply.Success = r.Success
 	reply.ConflictOpt = r.ConflictOpt
@@ -382,13 +382,6 @@ func (rf *Raft) handleVoteRequest(rpc *RequestVoteArgs) RequestVoteReply {
 		rf.revertToFollower(rpc.Term, -1)
 	}
 
-	// Do not respond to the request if we've received a heartbeat within the election timeout minimum.
-	// We believe the leader still exists.
-	delta := time.Since(rf.lastHeartBeat)
-	if delta <= time.Millisecond * MinimumElectionTimeoutInMillis {
-		return RequestVoteReply{rf.currentTerm, false}
-	}
-
 	// Check if candidate's log is at least as up-to-date as this peer's.
 	// If candidate's log is not at least as up-to-date as this peer, then reject.
 	isClientUpToDate := rpc.LastLogTerm > rf.getLastLogTerm() || (rpc.LastLogTerm == rf.getLastLogTerm() && rpc.LastLogIndex >= rf.getLastLogIndex())
@@ -400,11 +393,9 @@ func (rf *Raft) handleVoteRequest(rpc *RequestVoteArgs) RequestVoteReply {
 	switch rf.votedFor {
 	// This peer has already voted for the candidate.
 	case rpc.CandidateId:
-		rf.lastHeartBeat = time.Now()
 		return RequestVoteReply{rf.currentTerm, true}
 	// This peer has not yet voted for the current term, so vote for the candidate.
 	case -1:
-		rf.lastHeartBeat = time.Now()
 		rf.votedFor = rpc.CandidateId
 		rf.revertToFollower(rpc.Term, rf.votedFor)
 		rf.persist()
@@ -433,7 +424,6 @@ func (rf *Raft) handleAppendEntriesRequest(rpc *AppendEntriesArgs) AppendEntries
 
 	if matched {
 		reply.Success = true
-		rf.lastHeartBeat = time.Now()
 
 		posOfFirstUnmatchedEntry := 0
 		for ; posOfFirstUnmatchedEntry < len(rpc.Entries); posOfFirstUnmatchedEntry++ {
@@ -554,7 +544,6 @@ func (rf *Raft) applyEntriesToStateMachine() {
 //
 // TODO: Take care of the blocking and goroutines leaks caused by zero buffer channel.
 // TODO: Take care of the buffer size of each channel.
-// TODO: [Test Error] TestFigure8Unreliable2C - config.go:475: one(5383) failed to reach agreement
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
@@ -584,7 +573,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	NoOpEntry := Entry{0, 0, nil}
 	rf.log = []Entry{NoOpEntry}
 
-	rf.raftMsgChan = make(chan interface{}, 1000)
+	rf.raftMsgChan = make(chan interface{}, 10000)
 	rf.isReadyToApplyEntriesToStateMachine = make(chan bool)
 	rf.shutdown = make(chan bool)
 
