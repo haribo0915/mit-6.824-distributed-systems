@@ -48,6 +48,14 @@ type ApplyMsg struct {
 const MinimumElectionTimeoutInMillis = 300
 const MaximumElectionTimeoutInMillis = 600
 
+// HeartBeatIntervalInMillis
+// If the value is too low, peers can't reach agreement due to frequently election timeout.
+const HeartBeatIntervalInMillis = 120
+
+// HeartBeatTimeoutInMillis
+// If the value is too low, peers can't reach agreement due to frequently election timeout.
+const HeartBeatTimeoutInMillis = 200
+
 type State int
 
 const (
@@ -191,10 +199,19 @@ type AppendEntriesArgs struct {
 	LeaderCommit int
 }
 
+type StartNewCommandArgs struct {
+	command interface{}
+}
+
 type AppendEntriesReply struct {
 	Term int
 	Success bool
 	ConflictOpt ConflictOpt
+}
+
+type StartNewCommandReply struct {
+	Index int
+	Term int
 }
 
 type Entry struct {
@@ -218,6 +235,11 @@ type AppendEntriesMsg struct {
 	done chan<- AppendEntriesReply
 }
 
+type StartNewCommandMsg struct {
+	rpc *StartNewCommandArgs
+	done chan<- StartNewCommandReply
+}
+
 // RequestVote
 // example RequestVote RPC handler.
 //
@@ -233,6 +255,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	// DPrintf("[peer_%v] got append entries request from [peer_%v]", rf.me, args.LeaderId)
 	// Your code here (2A, 2B).
 	done := make(chan AppendEntriesReply, 1)
 	rf.raftMsgChan <- AppendEntriesMsg{args, done}
@@ -303,12 +326,19 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
+
 	if rf.currentState == Leader {
-		entry := Entry{rf.currentTerm, rf.getLastLogIndex() + 1, command}
-		index = entry.Index
-		term = entry.Term
-		rf.log = append(rf.log, entry)
-		rf.persist()
+		done := make(chan StartNewCommandReply, 1)
+
+		// To pass Test (2B): concurrent Start()s.
+		// Synchronize the start command requests to avoid concurrent requests.
+		rf.raftMsgChan <- StartNewCommandMsg{&StartNewCommandArgs{command}, done}
+
+		// Copy data.
+		reply := <-done
+		index = reply.Index
+		term = reply.Term
+
 		DPrintf("[peer_%v] started reaching agreement on command_%v", rf.me, index)
 	} else {
 		isLeader = false
@@ -364,6 +394,9 @@ func (rf *Raft) handleRaftMsg(msg interface{}) {
 	case AppendEntriesMsg:
 		msg := msg.(AppendEntriesMsg)
 		msg.done <- rf.handleAppendEntriesRequest(msg.rpc)
+	case StartNewCommandMsg:
+		msg := msg.(StartNewCommandMsg)
+		msg.done <- rf.handleStartNewCommandRequest(msg.rpc)
 	default:
 		DPrintf("[peer_%v] message type error", rf.me)
 	}
@@ -407,6 +440,7 @@ func (rf *Raft) handleVoteRequest(rpc *RequestVoteArgs) RequestVoteReply {
 }
 
 func (rf *Raft) handleAppendEntriesRequest(rpc *AppendEntriesArgs) AppendEntriesReply {
+	DPrintf("[peer_%v] got append entries request from [peer_%v]", rf.me, rpc.LeaderId)
 	reply := AppendEntriesReply{rf.currentTerm, false, ConflictOpt{0, 0}}
 
 	// If candidate's current term is less than this peer's current term, reject.
@@ -471,6 +505,20 @@ func (rf *Raft) handleAppendEntriesRequest(rpc *AppendEntriesArgs) AppendEntries
 		// If rpc.PrevLogIndex < 0 or rpc.PrevLogIndex >= len(rf.log), set ConflictOpt to the last entry.
 		reply.ConflictOpt.Term = rf.getLastLogTerm()
 		reply.ConflictOpt.Index = rf.getLastLogIndex()
+	}
+
+	return reply
+}
+
+func (rf *Raft) handleStartNewCommandRequest(rpc *StartNewCommandArgs) StartNewCommandReply {
+	reply := StartNewCommandReply{-1, -1}
+
+	if rf.currentState == Leader {
+		entry := Entry{rf.currentTerm, rf.getLastLogIndex() + 1, rpc.command}
+		reply.Index = entry.Index
+		reply.Term = entry.Term
+		rf.log = append(rf.log, entry)
+		rf.persist()
 	}
 
 	return reply
@@ -579,7 +627,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-	DPrintf("[peer_%v] Initial term: %v, votedFor: %v, log: %v", rf.me, rf.currentTerm, rf.votedFor, rf.log)
+	DPrintf("[peer_%v] initial term: %v, votedFor: %v, log: %v", rf.me, rf.currentTerm, rf.votedFor, rf.log)
 
 	go rf.run()
 	go rf.applyEntriesToStateMachine()
@@ -666,9 +714,6 @@ func (leader *LeaderState) spawnAppendEntriesRequests() {
 					return
 				}
 
-				// Send append entries request per 150 milliseconds.
-				time.Sleep(time.Millisecond * 150)
-
 				var entries []Entry
 				for i := leader.rf.nextIndex[peerId] ; i <= leader.rf.getLastLogIndex(); i++ {
 					entries = append(entries, leader.rf.log[i])
@@ -691,9 +736,30 @@ func (leader *LeaderState) spawnAppendEntriesRequests() {
 				request.Entries = entries
 				request.LeaderCommit = leader.rf.commitIndex
 
-				if ok := leader.rf.sendAppendEntries(peerId, request, reply); ok {
-					leader.handleAppendEntriesReply(peerId, request, reply)
+				// TODO: [Data Race] currentState might change to Follower here (leader may spawn append entries request while handling vote or append entries request concurrently).
+				if leader.rf.currentState != Leader {
+					return
 				}
+
+				// Create buffered channel to prevent goroutine leaks caused by blocking of write channel.
+				done := make(chan bool, 1)
+				go func(done chan<- bool) {
+					if ok := leader.rf.sendAppendEntries(peerId, request, reply); ok {
+						leader.handleAppendEntriesReply(peerId, request, reply)
+					}
+					done <- true
+				}(done)
+
+				// To pass Test (2A): election after network failure, which rpc will be discarded after disconnection.
+				// Send new append entries rpc once current rpc timeout to ensure latest term number.
+				select {
+				case <-time.After(time.Duration(HeartBeatTimeoutInMillis) * time.Millisecond):
+					// DPrintf("[peer_%v] sending heart beat timeout", leader.rf.me)
+				case <-done:
+				}
+
+				// Send append entries request per HeartBeatIntervalInMillis milliseconds.
+				time.Sleep(time.Millisecond * HeartBeatIntervalInMillis)
 			}
 		}(i)
 	}
