@@ -49,12 +49,9 @@ const MinimumElectionTimeoutInMillis = 300
 const MaximumElectionTimeoutInMillis = 600
 
 // HeartBeatIntervalInMillis
-// If the value is too low, peers can't reach agreement due to frequently election timeout.
+// To reliably pass Test (2C): Figure 8 (unreliable) to reach agreement in time.
+// If the interval is too high, peers can't reach agreement caused by frequently election timeout.
 const HeartBeatIntervalInMillis = 120
-
-// HeartBeatTimeoutInMillis
-// If the value is too low, peers can't reach agreement due to frequently election timeout.
-const HeartBeatTimeoutInMillis = 200
 
 type State int
 
@@ -118,13 +115,6 @@ func (rf *Raft) setTargetState(targetState State) {
 //
 func (rf *Raft) persist() {
 	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	e.Encode(rf.currentTerm)
@@ -143,18 +133,6 @@ func (rf *Raft) readPersist(data []byte) {
 		return
 	}
 	// Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
 	var currentTerm int
@@ -240,9 +218,7 @@ type StartNewCommandMsg struct {
 	done chan<- StartNewCommandReply
 }
 
-// RequestVote
-// example RequestVote RPC handler.
-//
+// RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	done := make(chan RequestVoteReply, 1)
@@ -255,7 +231,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	// DPrintf("[peer_%v] got append entries request from [peer_%v]", rf.me, args.LeaderId)
 	// Your code here (2A, 2B).
 	done := make(chan AppendEntriesReply, 1)
 	rf.raftMsgChan <- AppendEntriesMsg{args, done}
@@ -326,7 +301,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
-
 	if rf.currentState == Leader {
 		done := make(chan StartNewCommandReply, 1)
 
@@ -592,6 +566,7 @@ func (rf *Raft) applyEntriesToStateMachine() {
 //
 // TODO: Take care of the blocking and goroutines leaks caused by zero buffer channel.
 // TODO: Take care of the buffer size of each channel.
+// TODO: Take care of race condition caused by data race.
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
@@ -687,6 +662,11 @@ func (leader *LeaderState) run() {
 		}
 
 		select {
+		// Send new append entries rpc even if previous rpc hasn't finished to
+		// (1) ensure leader received latest term to update in case that previous heartbeat was discarded.
+		// (2) prevent candidate and follower's election timeout in case that previous heartbeat was discarded.
+		case <-time.After(time.Duration(HeartBeatIntervalInMillis) * time.Millisecond):
+			leader.spawnAppendEntriesRequests()
 		case msg := <-leader.rf.raftMsgChan:
 			leader.rf.handleRaftMsg(msg)
 		case term := <-leader.shouldRevertToFollower:
@@ -709,57 +689,34 @@ func (leader *LeaderState) spawnAppendEntriesRequests() {
 		}
 
 		go func(peerId int) {
-			for {
-				if leader.rf.currentState != Leader {
-					return
-				}
+			if leader.rf.currentState != Leader {
+				return
+			}
 
-				var entries []Entry
-				for i := leader.rf.nextIndex[peerId] ; i <= leader.rf.getLastLogIndex(); i++ {
-					entries = append(entries, leader.rf.log[i])
-				}
+			var entries []Entry
+			for i := leader.rf.nextIndex[peerId] ; i <= leader.rf.getLastLogIndex(); i++ {
+				entries = append(entries, leader.rf.log[i])
+			}
 
-				request := new(AppendEntriesArgs)
-				reply := new(AppendEntriesReply)
+			request := new(AppendEntriesArgs)
+			reply := new(AppendEntriesReply)
 
-				request.Term = leader.rf.currentTerm
-				request.LeaderId = leader.rf.me
-				request.PrevLogIndex = leader.rf.nextIndex[peerId] - 1
+			request.Term = leader.rf.currentTerm
+			request.LeaderId = leader.rf.me
+			request.PrevLogIndex = leader.rf.nextIndex[peerId] - 1
 
-				// TODO: [Corner Case] not sure why sometimes index out of bound will happen.
-				if entry, ok := leader.rf.getEntryAtIndex(request.PrevLogIndex); ok {
-					request.PrevLogTerm = entry.Term
-				} else {
-					request.PrevLogTerm = 0
-				}
+			// TODO: [Corner Case] not sure why sometimes index out of bound will happen.
+			if entry, ok := leader.rf.getEntryAtIndex(request.PrevLogIndex); ok {
+				request.PrevLogTerm = entry.Term
+			} else {
+				request.PrevLogTerm = 0
+			}
 
-				request.Entries = entries
-				request.LeaderCommit = leader.rf.commitIndex
+			request.Entries = entries
+			request.LeaderCommit = leader.rf.commitIndex
 
-				// TODO: [Data Race] currentState might change to Follower here (leader may spawn append entries request while handling vote or append entries request concurrently).
-				if leader.rf.currentState != Leader {
-					return
-				}
-
-				// Create buffered channel to prevent goroutine leaks caused by blocking of write channel.
-				done := make(chan bool, 1)
-				go func(done chan<- bool) {
-					if ok := leader.rf.sendAppendEntries(peerId, request, reply); ok {
-						leader.handleAppendEntriesReply(peerId, request, reply)
-					}
-					done <- true
-				}(done)
-
-				// To pass Test (2A): election after network failure, which rpc will be discarded after disconnection.
-				// Send new append entries rpc once current rpc timeout to ensure latest term number.
-				select {
-				case <-time.After(time.Duration(HeartBeatTimeoutInMillis) * time.Millisecond):
-					// DPrintf("[peer_%v] sending heart beat timeout", leader.rf.me)
-				case <-done:
-				}
-
-				// Send append entries request per HeartBeatIntervalInMillis milliseconds.
-				time.Sleep(time.Millisecond * HeartBeatIntervalInMillis)
+			if ok := leader.rf.sendAppendEntries(peerId, request, reply); ok {
+				leader.handleAppendEntriesReply(peerId, request, reply)
 			}
 		}(i)
 	}
