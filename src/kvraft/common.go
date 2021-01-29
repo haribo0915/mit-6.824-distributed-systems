@@ -7,6 +7,10 @@ const (
 )
 
 type Err string
+type SerialNumber struct {
+	ClientId int64
+	Counter int64
+}
 
 // Put or Append
 type PutAppendArgs struct {
@@ -16,6 +20,7 @@ type PutAppendArgs struct {
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	SerialNumber SerialNumber
 }
 
 type PutAppendReply struct {
@@ -24,7 +29,9 @@ type PutAppendReply struct {
 
 type GetArgs struct {
 	Key string
+
 	// You'll have to add definitions here.
+	SerialNumber SerialNumber
 }
 
 type GetReply struct {
