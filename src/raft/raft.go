@@ -130,7 +130,7 @@ func (rf *Raft) persist() {
 	rf.persister.SaveRaftState(data)
 }
 
-func (rf *Raft) PersistStateAndSnapshot(kvSnapshot []byte, shouldTruncateToLastApplied bool) {
+func (rf *Raft) PersistStateAndSnapshot(kvSnapshot []byte, lastApplied int) {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 
@@ -139,9 +139,10 @@ func (rf *Raft) PersistStateAndSnapshot(kvSnapshot []byte, shouldTruncateToLastA
 	e.Encode(rf.votedFor)
 	e.Encode(rf.log)
 
-	if shouldTruncateToLastApplied {
+	if lastApplied != -1 && lastApplied >= rf.lastIncludedIndex {
 		// Snapshot metadata.
-		rf.lastIncludedIndex = rf.lastApplied
+		// Use given lastApplied instead of rf.lastApplied, which might have been changed by handleInstallSnapshotRequest.
+		rf.lastIncludedIndex = lastApplied
 		rf.truncateLogPrefixUpTo(rf.lastIncludedIndex)
 		if entry, find := rf.getEntryAtIndex(rf.lastIncludedIndex); find {
 			rf.lastIncludedTerm = entry.Term
@@ -512,7 +513,10 @@ func (rf *Raft) handleAppendEntriesRequest(rpc *AppendEntriesArgs) AppendEntries
 				// If existing entry conflicts with a new one (same index but different terms),
 				// delete the existing entry and all that follow it.
 				if rpc.Entries[posOfFirstUnmatchedEntry].Term != entry.Term {
-					rf.log = rf.log[:rf.calculateLocalIndex(entry.Index)] // truncate
+					// TODO: Temporary workaround to avoid the consequence of race condition (the found entry may have been truncated already)
+					if localIndex := rf.calculateLocalIndex(entry.Index); localIndex > 0 {
+						rf.log = rf.log[:rf.calculateLocalIndex(entry.Index)] // truncate
+					}
 					break
 				}
 			} else {
@@ -577,10 +581,10 @@ func (rf *Raft) handleInstallSnapshotRequest(rpc *InstallSnapshotArgs) InstallSn
 
 	if _, find := rf.getEntryAtIndex(rf.lastIncludedIndex); find {
 		rf.truncateLogPrefixUpTo(rf.lastIncludedIndex)
-		rf.PersistStateAndSnapshot(rpc.Data, false)
+		rf.PersistStateAndSnapshot(rpc.Data, -1)
 	} else {
 		rf.log = []Entry{{rf.lastIncludedTerm,rf.lastIncludedIndex,nil}}
-		rf.PersistStateAndSnapshot(rpc.Data, false)
+		rf.PersistStateAndSnapshot(rpc.Data, -1)
 		rf.commitIndex = rf.lastIncludedIndex
 		rf.isReadyToApplyEntriesToStateMachine <- true
 	}
@@ -849,11 +853,11 @@ func (leader *LeaderState) spawnAppendEntriesRequests() {
 
 			// Install snapshot to follower since leader has already discarded
 			// the next log entry that it needs to send to a follower.
-			if leader.rf.nextIndex[peerId] < leader.rf.lastIncludedIndex {
-				DPrintf("[peer_%v] trigger install snapshot: rf.nextIndex[peer_%v] = %v, rf.lastIncludedIndex = %v", leader.rf.me, peerId, leader.rf.nextIndex[peerId], leader.rf.lastIncludedIndex)
-				leader.RequestInstallSnapshot(peerId)
-				return
-			}
+			//if leader.rf.nextIndex[peerId] < leader.rf.lastIncludedIndex {
+			//	DPrintf("[peer_%v] trigger install snapshot: rf.nextIndex[peer_%v] = %v, rf.lastIncludedIndex = %v", leader.rf.me, peerId, leader.rf.nextIndex[peerId], leader.rf.lastIncludedIndex)
+			//	leader.RequestInstallSnapshot(peerId)
+			//	return
+			//}
 
 			var entries []Entry
 			lastIndex := leader.rf.calculateLocalIndex(leader.rf.getLastLogIndex())

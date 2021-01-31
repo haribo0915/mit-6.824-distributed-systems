@@ -51,7 +51,6 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
 	args := GetArgs{key, SerialNumber{ck.id, ck.counter}}
-	ck.counter += 1
 	DPrintf("[client_%v] started sending Get %v operation", ck.id, key)
 	for {
 		reply := GetReply{}

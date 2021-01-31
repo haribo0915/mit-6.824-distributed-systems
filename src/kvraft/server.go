@@ -133,7 +133,7 @@ func (kv *KVServer) run() {
 			if applyMsg.CommandValid && applyMsg.Command != nil {
 				op := applyMsg.Command.(Op)
 				res := kv.doOperation(&op)
-				go kv.saveSnapshot()
+				go kv.saveSnapshot(applyMsg.CommandIndex)
 				if kv.isLeader() {
 					if resultChan, ok := kv.getResultChannel(applyMsg.CommandIndex); ok {
 						resultChan <- res
@@ -188,7 +188,7 @@ func (kv *KVServer) isLeader() bool {
 	return isLeader
 }
 
-func (kv* KVServer) saveSnapshot() {
+func (kv* KVServer) saveSnapshot(lastApplied int) {
 	if kv.maxraftstate != -1 && kv.rf.RaftStateSize() >= kv.maxraftstate {
 		kv.mu.Lock()
 		defer kv.mu.Unlock()
@@ -198,7 +198,7 @@ func (kv* KVServer) saveSnapshot() {
 		// Snapshot.
 		e.Encode(kv.storage)
 		e.Encode(kv.clientToOperationCounter)
-		kv.rf.PersistStateAndSnapshot(w.Bytes(), true)
+		kv.rf.PersistStateAndSnapshot(w.Bytes(), lastApplied)
 	}
 }
 
