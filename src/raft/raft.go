@@ -853,11 +853,11 @@ func (leader *LeaderState) spawnAppendEntriesRequests() {
 
 			// Install snapshot to follower since leader has already discarded
 			// the next log entry that it needs to send to a follower.
-			//if leader.rf.nextIndex[peerId] < leader.rf.lastIncludedIndex {
-			//	DPrintf("[peer_%v] trigger install snapshot: rf.nextIndex[peer_%v] = %v, rf.lastIncludedIndex = %v", leader.rf.me, peerId, leader.rf.nextIndex[peerId], leader.rf.lastIncludedIndex)
-			//	leader.RequestInstallSnapshot(peerId)
-			//	return
-			//}
+			if leader.rf.nextIndex[peerId] < leader.rf.lastIncludedIndex {
+				DPrintf("[peer_%v] trigger install snapshot: rf.nextIndex[peer_%v] = %v, rf.lastIncludedIndex = %v", leader.rf.me, peerId, leader.rf.nextIndex[peerId], leader.rf.lastIncludedIndex)
+				leader.RequestInstallSnapshot(peerId)
+				return
+			}
 
 			var entries []Entry
 			lastIndex := leader.rf.calculateLocalIndex(leader.rf.getLastLogIndex())
