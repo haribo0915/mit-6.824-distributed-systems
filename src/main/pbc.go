@@ -3,7 +3,7 @@ package main
 //
 // pbservice client application
 //
-// export GOPATH=~/6.824
+// export GOPATH=~/mit-6.824-distributed-systems
 // go build viewd.go
 // go build pbd.go
 // go build pbc.go

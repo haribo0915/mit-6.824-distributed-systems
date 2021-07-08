@@ -1,6 +1,6 @@
 package main
 
-// export GOPATH=~/6.824
+// export GOPATH=~/mit-6.824-distributed-systems
 // go build lockd.go
 // go build lockc.go
 // ./lockd -p a b &

@@ -1,5 +1,5 @@
 # This is the Makefile helping you submit the labs.  
-# Just create 6.824/api.key with your API key in it, 
+# Just create mit-6.824-distributed-systems/api.key with your API key in it,
 # and submit your lab with the following command: 
 #     $ make [lab1|lab2a|lab2b|lab2c|lab3a|lab3b|lab4a|lab4b]
 

@@ -36,7 +36,7 @@ func TestGOB(t *testing.T) {
 		x1 := 1
 		t1 := T1{}
 		t1.T1int1 = 1
-		t1.T1string1 = "6.824"
+		t1.T1string1 = "mit-6.824-distributed-systems"
 		t2 := T2{}
 		t2.T2slice = []T1{T1{}, t1}
 		t2.T2map = map[int]*T1{}
@@ -81,7 +81,7 @@ func TestGOB(t *testing.T) {
 		if t1.T1string0 != "" {
 			t.Fatalf("wrong t1.T1string0 %v\n", t1.T1string0)
 		}
-		if t1.T1string1 != "6.824" {
+		if t1.T1string1 != "mit-6.824-distributed-systems" {
 			t.Fatalf("wrong t1.T1string1 %v\n", t1.T1string1)
 		}
 		if len(t2.T2slice) != 2 {
